@@ -148,8 +148,8 @@ def create_app(store: Store, engine: Engine, worker: Worker, data_dir: Path,
 
     @app.post("/v1/tts/jobs", status_code=202, dependencies=deps)
     def create_tts_job(req: TTSRequest, idempotency_key: Optional[str] = Header(None)):
-        if not req.text.strip():
-            raise HTTPException(422, "text is empty")
+        if not any(ch.isalnum() for ch in req.text):
+            raise HTTPException(422, "text has nothing speakable (no letters or digits)")
         if len(req.text) > MAX_TEXT_CHARS:
             raise HTTPException(413, f"text exceeds {MAX_TEXT_CHARS} characters")
         body = req.model_dump()

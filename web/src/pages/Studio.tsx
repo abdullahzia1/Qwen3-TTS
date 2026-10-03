@@ -234,7 +234,7 @@ function Result({ job }: { job: Job }) {
       </div>
       <Waveform ref={wave} url={api.audioUrl(job)} onTime={setNow} />
       <div className="stats small muted mono">
-        {fmt(meta.duration_s)} · {meta.lufs} LUFS · RTF {meta.rtf ?? "—"} · {chunks.length} chunks
+        {fmt(meta.duration_s)} · {meta.lufs ?? "—"} LUFS · RTF {meta.rtf ?? "—"} · {chunks.length} chunks
         {meta.retried_chunks.length > 0 && ` · retried ${meta.retried_chunks.join(", ")}`}
       </div>
       <ol className="chunks">

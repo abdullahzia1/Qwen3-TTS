@@ -135,9 +135,11 @@ def assemble(raw: List[np.ndarray], results: List[ChunkResult], sr: int, target_
 
 def summarize(results: List[ChunkResult], out: np.ndarray, sr: int) -> Dict[str, Any]:
     duration = len(out) / sr
+    lufs = loudness(out, sr)
     return {
         "duration_s": round(duration, 3),
-        "lufs": round(loudness(out, sr), 2),
+        # Silence or sub-400ms audio has no measurable loudness; JSON has no -inf.
+        "lufs": round(lufs, 2) if np.isfinite(lufs) else None,
         "suspect_chunks": [r.idx for r in results if r.status != "ok"],
         "retried_chunks": [r.idx for r in results if r.attempts > 1],
     }
@@ -167,8 +169,8 @@ def synthesize(
     gen_params = {**voice.params, **(params or {})}
     norm = normalize(text, lexicon)
     chunks: List[Chunk] = chunk(norm, max_chars=max_chars)
-    if not chunks:
-        raise ValueError("Nothing to synthesize after normalization.")
+    if not chunks or not any(ch.isalnum() for ch in norm):
+        raise ValueError("Nothing speakable in the text (no letters or digits).")
 
     expected = [_expected_seconds(c.text, voice) for c in chunks]
     audio: List[Optional[np.ndarray]] = [None] * len(chunks)

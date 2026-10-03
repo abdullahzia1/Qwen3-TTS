@@ -67,7 +67,7 @@ export type Job<Req = TTSRequest> = {
       duration_s: number;
       elapsed_s: number;
       rtf: number | null;
-      lufs: number;
+      lufs: number | null;
       params: GenParams;
       suspect_chunks: number[];
       retried_chunks: number[];
