@@ -25,8 +25,9 @@ class FakeTTS:
         config=SimpleNamespace(_name_or_path="fake"), tts_model_type="base", tts_model_size="1b7", dtype="fp32",
     )
 
-    def __init__(self):
+    def __init__(self, delay: float = 0.0):
         self.calls = 0
+        self.delay = delay
 
     def create_voice_clone_prompt(self, ref_audio, ref_text=None, x_vector_only_mode=False):
         return [VoiceClonePromptItem(ref_code=torch.zeros(10, 16, dtype=torch.long), ref_spk_embedding=torch.zeros(8),
@@ -35,6 +36,7 @@ class FakeTTS:
 
     def generate_voice_clone(self, text, language, voice_clone_prompt, non_streaming_mode, max_new_tokens, **kw):
         self.calls += 1
+        time.sleep(self.delay)
         out = []
         for t in text:
             n = int(SR * len(t) / 12.0)
@@ -66,9 +68,9 @@ def client(tmp_path):
     worker.shutdown()
 
 
-def _make_voice(client, name="narrator"):
+def _make_voice(client, name="narrator", seconds=6):
     buf = io.BytesIO()
-    t = np.arange(SR * 6) / SR
+    t = np.arange(int(SR * seconds)) / SR
     sf.write(buf, (0.3 * np.sin(2 * np.pi * 180 * t)).astype(np.float32), SR, format="WAV")
     r = client.post("/v1/voices", data={"name": name, "ref_text": "A calm reference sentence for testing the voice."},
                     files={"file": ("ref.wav", buf.getvalue(), "audio/wav")})
@@ -171,3 +173,107 @@ def test_store_is_safe_under_concurrent_reads(tmp_path):
     for t in threads:
         t.join()
     assert not errors, errors[:3]
+
+
+def _upload(client, name, payload, ref_text="Some words here."):
+    r = client.post("/v1/voices", data={"name": name, "ref_text": ref_text},
+                    files={"file": ("ref.wav", payload, "audio/wav")})
+    return r
+
+
+def test_bad_uploads_fail_with_clear_errors(client, tmp_path):
+    job = _wait(client, _upload(client, "garbage", b"definitely not audio").json()["id"])
+    assert job["status"] == "failed" and job["error"]
+
+    buf = io.BytesIO()
+    sf.write(buf, (0.2 * np.sin(np.arange(SR * 35) / 8)).astype(np.float32), SR, format="WAV")
+    job = _wait(client, _upload(client, "toolong", buf.getvalue()).json()["id"])
+    assert job["status"] == "failed" and "at most 30s" in job["error"]
+
+    buf = io.BytesIO()
+    sf.write(buf, (0.2 * np.sin(np.arange(SR * 1) / 8)).astype(np.float32), SR, format="WAV")
+    job = _wait(client, _upload(client, "tooshort", buf.getvalue()).json()["id"])
+    assert job["status"] == "failed" and "at least 3s" in job["error"]
+
+    # Raw uploads are removed once processed, success or failure.
+    assert list((tmp_path / "uploads").iterdir()) == []
+
+
+def test_long_reference_warns(client):
+    job = _make_voice(client, "longref", seconds=24)
+    assert job["status"] == "succeeded"
+    v = client.get("/v1/voices").json()[0]["versions"][0]
+    assert v["warnings"] and "24s" in v["warnings"][0]
+
+
+def test_upload_size_limit(client, monkeypatch):
+    import server.app as app_mod
+
+    monkeypatch.setattr(app_mod, "MAX_UPLOAD_BYTES", 1000)
+    r = _upload(client, "huge", b"x" * 5000)
+    assert r.status_code == 413
+
+
+@pytest.fixture()
+def slow_client(tmp_path):
+    fake = FakeTTS(delay=0.6)
+    store = Store(str(tmp_path / "s.db"))
+    engine = Engine(lambda: fake)
+    worker = Worker(store, engine, tmp_path)
+    app = create_app(store, engine, worker, tmp_path)
+    worker.start()
+    with TestClient(app) as c:
+        c.engine = engine
+        yield c
+    worker.shutdown()
+
+
+def test_regenerate_while_running_is_rejected(slow_client):
+    _make_voice(slow_client)
+    jid = slow_client.post("/v1/tts/jobs", json={"voice": "narrator", "text": "One. Two.\n\nThree. Four."}).json()["id"]
+    for _ in range(100):
+        if slow_client.get(f"/v1/jobs/{jid}").json()["status"] == "running":
+            break
+        time.sleep(0.02)
+    r = slow_client.post(f"/v1/tts/jobs/{jid}/chunks/0/regenerate", json={})
+    assert r.status_code == 409
+    assert _wait(slow_client, jid)["status"] == "succeeded"
+
+
+def test_stop_while_busy_finishes_job_then_unloads(slow_client):
+    _make_voice(slow_client)
+    jid = slow_client.post("/v1/tts/jobs", json={"voice": "narrator", "text": "One sentence. Another sentence."}).json()["id"]
+    for _ in range(200):
+        if slow_client.get("/v1/engine").json()["state"] == "busy":
+            break
+        time.sleep(0.01)
+    st = slow_client.post("/v1/engine/stop").json()
+    assert st["state"] == "busy" and st["stop_pending"]
+    assert _wait(slow_client, jid)["status"] == "succeeded"
+    time.sleep(0.3)
+    assert slow_client.get("/v1/engine").json()["state"] == "stopped"
+
+
+def test_stop_while_loading_unloads_after_load(tmp_path):
+    def slow_loader():
+        time.sleep(0.3)
+        return FakeTTS()
+
+    engine = Engine(slow_loader)
+    engine.start()
+    assert engine.state == "loading"
+    engine.stop()
+    time.sleep(0.6)
+    assert engine.state == "stopped" and engine.tts is None
+
+
+def test_crashed_tasks_are_requeued_on_restart(tmp_path):
+    db = str(tmp_path / "r.db")
+    store = Store(db)
+    job = store.create_job("tts", {"text": "x"}, "tts.render", {})
+    task = store.claim_task()
+    store.update_job(job["id"], status="running")
+    assert task and store.claim_task() is None  # claimed, simulating a crash mid-render
+    restarted = Store(db)
+    assert restarted.get_job(job["id"])["status"] == "queued"
+    assert restarted.claim_task()["job_id"] == job["id"]

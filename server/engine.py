@@ -57,11 +57,15 @@ class Engine:
         with self._lock:
             self.tts, self.state = tts, "ready"
             self.loaded_at = self.last_used = time.time()
+            stop = self._stop_after_task
             self._stop_after_task = False
+        if stop:  # Stop was pressed while the model was still loading.
+            self._unload()
 
     def stop(self) -> None:
         with self._lock:
-            if self.state == "busy":
+            if self.state in ("busy", "loading"):
+                # Never interrupt a load or a generation; unload once it finishes.
                 self._stop_after_task = True
                 return
             if self.state != "ready":

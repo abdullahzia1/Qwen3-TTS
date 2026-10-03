@@ -3,7 +3,6 @@
 import json
 import random
 import re
-import shutil
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -20,6 +19,7 @@ from .engine import Engine
 from .worker import Worker
 
 MAX_TEXT_CHARS = 60_000
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # a 30 s reference is ~3 MB as WAV; leave room for lossless formats
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
 PRIORITY_INTERACTIVE = 10
 
@@ -136,8 +136,15 @@ def create_app(store: Store, engine: Engine, worker: Worker, data_dir: Path,
         uploads.mkdir(parents=True, exist_ok=True)
         suffix = Path(file.filename or "ref.wav").suffix.lower() or ".wav"
         ref_path = uploads / f"{uuid.uuid4().hex}{suffix}"
+        size = 0
         with ref_path.open("wb") as f:
-            shutil.copyfileobj(file.file, f)
+            while block := file.file.read(1024 * 1024):
+                size += len(block)
+                if size > MAX_UPLOAD_BYTES:
+                    f.close()
+                    ref_path.unlink(missing_ok=True)
+                    raise HTTPException(413, f"reference audio exceeds {MAX_UPLOAD_BYTES // (1024 * 1024)} MB")
+                f.write(block)
         request = {"name": name, "ref_text": ref_text, "language": language,
                    "x_vector_only": x_vector_only, "notes": notes}
         return store.create_job("voice", request, "voice.create", {"ref_path": str(ref_path)},

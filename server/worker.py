@@ -133,13 +133,20 @@ class Worker:
 
     def _create_voice(self, job: Dict[str, Any], ref_path: str) -> None:
         req = job["request"]
-        v = create_voice(
+        try:
+            v = self._build_voice(req, ref_path)
+        finally:
+            # The cleaned reference is stored inside the voice version; the raw upload is no longer needed.
+            Path(ref_path).unlink(missing_ok=True)
+        self.store.update_job(job["id"], status="succeeded", progress=1.0, finished_at=now(),
+                              result={"voice": v.id, "meta": v.meta})
+
+    def _build_voice(self, req: Dict[str, Any], ref_path: str):
+        return create_voice(
             self.engine.tts, str(self.voices_dir), req["name"], ref_path, req.get("ref_text", ""),
             language=req.get("language", "English"), x_vector_only=req.get("x_vector_only", False),
             params=req.get("params") or {}, notes=req.get("notes", ""),
         )
-        self.store.update_job(job["id"], status="succeeded", progress=1.0, finished_at=now(),
-                              result={"voice": v.id, "meta": v.meta})
 
     # --- helpers ------------------------------------------------------------
     def _save_final(self, job_id: str, wav: np.ndarray, sr: int) -> None:
