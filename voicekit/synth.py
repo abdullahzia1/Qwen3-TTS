@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from .audio import PAUSE_MS, loudness, normalize_loudness, stitch, trim_silence
+from .audio import PAUSE_MS, loudness, normalize_loudness, pitch_profile, stitch, trim_silence
 from .text import Chunk, chunk, normalize
 from .voice import Voice, model_info
 
@@ -23,6 +23,15 @@ CODEC_FPS = 12.5
 # tighten them once the benchmark shows the real spread.
 MIN_RATIO = 0.5
 MAX_RATIO = 1.7
+
+# Pitch checks, calibrated on real takes (2026-10-03): the jump users heard
+# measured +59% in its worst 2 s window, every acceptable chunk stayed <= 26%.
+# SPIKE_MAX_DEV: worst 2 s window vs the voice's reference pitch.
+# CONSISTENCY_MAX_DEV: a chunk's median pitch vs the median of all chunks in
+# the job (needs >= 3 chunks); catches a whole chunk read in a different register.
+SPIKE_MAX_DEV = 0.40
+CONSISTENCY_MAX_DEV = 0.20
+SLOW_RTF = 5.0
 
 
 @dataclass
@@ -37,6 +46,8 @@ class ChunkResult:
     status: str  # "ok" | "suspect" (kept after exhausting retries)
     start_s: float = 0.0
     end_s: float = 0.0
+    f0_median_hz: Optional[float] = None
+    issue: Optional[str] = None  # why the chunk is suspect, e.g. "pitch spike +59%"
 
 
 @dataclass
@@ -85,9 +96,40 @@ def _generate(tts, voice: Voice, texts: List[str], seed: int, params: Dict[str, 
     return wavs, sr
 
 
-def _check(wav: np.ndarray, sr: int, expected_s: float) -> bool:
+def _inspect(wav: np.ndarray, sr: int, expected_s: float, voice: Voice, target_f0: Optional[float] = None):
+    """Check one take. Returns (issue or None, median f0, badness) - lower badness is better."""
     dur = len(wav) / sr
-    return MIN_RATIO * expected_s <= dur <= MAX_RATIO * expected_s
+    ratio = dur / expected_s
+    med, windows = pitch_profile(wav, sr) if dur > 0.3 else (float("nan"), [])
+    f0 = med if np.isfinite(med) else None
+    len_bad = max(0.0, MIN_RATIO - ratio) / MIN_RATIO + max(0.0, ratio - MAX_RATIO) / MAX_RATIO
+
+    spike = 0.0
+    if voice.f0_median_hz and windows:
+        devs = [w / voice.f0_median_hz - 1 for w in windows]
+        spike = max(devs, key=abs)
+    drift = (f0 / target_f0 - 1) if (target_f0 and f0) else 0.0
+
+    issue = None
+    if ratio < MIN_RATIO:
+        issue = f"too short ({ratio:.0%} of expected)"
+    elif ratio > MAX_RATIO:
+        issue = f"too long ({ratio:.0%} of expected)"
+    elif abs(spike) > SPIKE_MAX_DEV:
+        issue = f"pitch spike {spike:+.0%}"
+    elif abs(drift) > CONSISTENCY_MAX_DEV:
+        issue = f"pitch {drift:+.0%} vs other chunks"
+    badness = len_bad + max(0.0, abs(spike) - SPIKE_MAX_DEV) + max(0.0, abs(drift) - CONSISTENCY_MAX_DEV)
+    return issue, f0, badness
+
+
+def _result(idx: int, c: Chunk, seed: int, attempts: int, wav, sr, expected: float, issue, f0) -> ChunkResult:
+    return ChunkResult(
+        idx=idx, text=c.text, boundary=c.boundary, seed=seed, attempts=attempts,
+        duration_s=round(len(wav) / sr, 3), expected_s=round(expected, 3),
+        status="suspect" if issue else "ok", issue=issue,
+        f0_median_hz=round(f0, 1) if f0 else None,
+    )
 
 
 def render_chunk(
@@ -98,25 +140,26 @@ def render_chunk(
     seed: int,
     params: Dict[str, Any],
     max_attempts: int = 3,
+    target_f0: Optional[float] = None,
 ):
-    """Render one chunk on its own, retrying with derived seeds. Returns (wav, sr, ChunkResult)."""
+    """Render one chunk on its own, retrying with derived seeds until a take passes.
+
+    `target_f0` (the median pitch of the job's other chunks) adds the
+    consistency check. Returns (wav, sr, ChunkResult) for the best take.
+    """
     expected = _expected_seconds(c.text, voice)
-    best, best_res = None, None
+    best = None  # (badness, wav, result)
+    sr = 24000
     for attempt in range(1, max_attempts + 1):
         s = seed if attempt == 1 else seed + 10_000 * attempt
         wavs, sr = _generate(tts, voice, [c.text], s, params, _token_cap(expected))
-        wav = wavs[0]
-        ok = _check(wav, sr, expected)
-        if best is None or ok or abs(len(wav) / sr - expected) < abs(best_res.duration_s - expected):
-            best = wav
-            best_res = ChunkResult(
-                idx=idx, text=c.text, boundary=c.boundary, seed=s, attempts=attempt,
-                duration_s=round(len(wav) / sr, 3), expected_s=round(expected, 3), status="ok" if ok else "suspect",
-            )
-        best_res.attempts = attempt
-        if ok:
+        issue, f0, bad = _inspect(wavs[0], sr, expected, voice, target_f0)
+        if best is None or bad < best[0] or (issue is None and best[2].issue is not None):
+            best = (bad, wavs[0], _result(idx, c, s, attempt, wavs[0], sr, expected, issue, f0))
+        best[2].attempts = attempt
+        if issue is None:
             break
-    return best, sr, best_res
+    return best[1], sr, best[2]
 
 
 def assemble(raw: List[np.ndarray], results: List[ChunkResult], sr: int, target_lufs: float = -16.0) -> np.ndarray:
@@ -185,26 +228,42 @@ def synthesize(
         batch_seed = seed * 100_003 + b
         wavs, sr = _generate(tts, voice, [chunks[i].text for i in idxs], batch_seed, gen_params, cap)
         for i, wav in zip(idxs, wavs):
-            ok = _check(wav, sr, expected[i])
+            issue, f0, _ = _inspect(wav, sr, expected[i], voice)
             audio[i] = wav
-            results[i] = ChunkResult(
-                idx=i, text=chunks[i].text, boundary=chunks[i].boundary, seed=batch_seed, attempts=1,
-                duration_s=round(len(wav) / sr, 3), expected_s=round(expected[i], 3), status="ok" if ok else "suspect",
-            )
+            results[i] = _result(i, chunks[i], batch_seed, 1, wav, sr, expected[i], issue, f0)
         if on_progress:
             on_progress(idxs[-1] + 1, len(chunks))
 
-    # Retries one chunk at a time with fresh seeds; keep the take closest to
-    # the expected length if none passes.
-    for i, res in enumerate(results):
-        if res.status == "ok" or max_attempts < 2:
-            continue
-        wav, sr, retry = render_chunk(tts, voice, i, chunks[i], seed * 100_003 + 20_000 + i, gen_params, max_attempts - 1)
-        retry.attempts += 1
-        if retry.status == "ok" or abs(retry.duration_s - expected[i]) < abs(res.duration_s - expected[i]):
-            audio[i], results[i] = wav, retry
+    def retry(i: int, seed_base: int, attempts: int, target_f0: Optional[float]) -> None:
+        old = results[i]
+        wav, _, new = render_chunk(tts, voice, i, chunks[i], seed_base, gen_params, attempts, target_f0)
+        new.attempts += old.attempts
+        _, _, old_bad = _inspect(audio[i], sr, expected[i], voice, target_f0)
+        _, _, new_bad = _inspect(wav, sr, expected[i], voice, target_f0)
+        if new.issue is None or new_bad < old_bad:
+            audio[i], results[i] = wav, new
         else:
-            res.attempts = retry.attempts
+            old.attempts = new.attempts
+
+    # Pass 2: retry chunks that failed their own checks (length, pitch spike).
+    if max_attempts > 1:
+        for i, res in enumerate(results):
+            if res.issue:
+                retry(i, seed * 100_003 + 20_000 + i, max_attempts - 1, None)
+
+    # Pass 3: consistency. A chunk whose median pitch sits far from the rest of
+    # the job is re-rendered toward the job's median.
+    target_f0 = None
+    if len(chunks) >= 3:
+        f0s = [r.f0_median_hz for r in results if r.f0_median_hz]
+        if len(f0s) >= 3:
+            target_f0 = float(np.median(f0s))
+            for i, res in enumerate(results):
+                if res.f0_median_hz and abs(res.f0_median_hz / target_f0 - 1) > CONSISTENCY_MAX_DEV:
+                    results[i].issue = results[i].issue or f"pitch {res.f0_median_hz / target_f0 - 1:+.0%} vs other chunks"
+                    results[i].status = "suspect"
+                    if max_attempts > 1:
+                        retry(i, seed * 100_003 + 30_000 + i, max_attempts - 1, target_f0)
 
     out = assemble(audio, results, sr, target_lufs)
     elapsed = time.time() - t0
@@ -221,4 +280,12 @@ def synthesize(
         **summarize(results, out, sr),
     }
     meta["rtf"] = round(elapsed / meta["duration_s"], 3) if meta["duration_s"] else None
+    meta["pitch_target_hz"] = round(target_f0, 1) if target_f0 else None
+    warnings = list(voice.meta.get("warnings", []))
+    if meta["rtf"] and meta["rtf"] > SLOW_RTF:
+        warnings.append(
+            f"Generation ran at {meta['rtf']:.0f}x real time (normally ~2x on this Mac). "
+            "The machine may be short on memory; check Memory Pressure in Activity Monitor."
+        )
+    meta["warnings"] = warnings
     return SynthResult(wav=out, sr=sr, chunks=results, meta=meta, chunk_wavs=audio)

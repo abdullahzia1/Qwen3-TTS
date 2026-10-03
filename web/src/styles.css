@@ -42,6 +42,7 @@ body {
 .small { font-size: 12.5px; }
 .muted { color: var(--muted); }
 .error { color: var(--err); }
+.warning { color: var(--warn); margin: 6px 0; }
 .grow { flex: 1; min-width: 0; }
 h2 { font-size: 17px; margin: 0 0 12px; }
 h3 { font-size: 15px; margin: 0 0 8px; }

@@ -24,6 +24,7 @@ export function Voices() {
                       {ver.chars_per_sec && ` · ${ver.chars_per_sec} chars/s`}
                     </span>
                   </div>
+                  {ver.warnings?.map((w) => <p key={w} className="warning small">⚠ {w}</p>)}
                   <p className="quote">“{ver.ref_text}”</p>
                   <audio controls preload="none" src={api.refUrl(v.name, ver.version)} />
                   {ver.notes && <p className="small muted">{ver.notes}</p>}
@@ -60,8 +61,9 @@ function CreateVoice() {
     <section className="panel">
       <h2>New voice</h2>
       <p className="small muted">
-        Use 8–15 s of one speaker, clean, in the exact delivery you want everywhere. The clip's pace and emotion
-        carry into every generation. Saving the same name again creates a new version.
+        Use 8–15 s of one speaker, clean, in the exact delivery you want everywhere (max 30 s; longer clips make
+        pitch unstable). The clip's pace and emotion carry into every generation. Saving the same name again
+        creates a new version.
       </p>
       <form
         onSubmit={(e) => {

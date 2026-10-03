@@ -35,3 +35,4 @@ example_output/
 voices/
 *.wav
 data/
+bench/runs/

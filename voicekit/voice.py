@@ -26,10 +26,17 @@ import torch
 
 from qwen_tts.inference.qwen3_tts_model import VoiceClonePromptItem
 
-from .audio import normalize_loudness, trim_silence
+from .audio import normalize_loudness, pitch_profile, trim_silence
 
 SAMPLE_RATE = 24000
 REF_LUFS = -20.0
+# The model conditions on the whole reference before every chunk. Long
+# references were measured to destabilise pitch (a 57 s clip caused a +59%
+# pitch jump that a 10 s excerpt of the same recording did not) and slow
+# generation down, so warn above REF_WARN_S and refuse above REF_MAX_S.
+REF_MIN_S = 3.0
+REF_WARN_S = 20.0
+REF_MAX_S = 30.0
 
 # Starting point for the Phase 1 sweep, not a tuned result.
 DEFAULT_PARAMS: Dict[str, Any] = {
@@ -54,6 +61,8 @@ class Voice:
     mode: str
     chars_per_sec: float
     params: Dict[str, Any]
+    # Median pitch of the reference; the yardstick for pitch-spike checks.
+    f0_median_hz: Optional[float] = None
     meta: Dict[str, Any] = field(default_factory=dict)
     prompt: List[VoiceClonePromptItem] = field(default_factory=list)
 
@@ -114,8 +123,17 @@ def create_voice(
 
     wav = prepare_reference(ref_audio)
     duration = len(wav) / SAMPLE_RATE
-    if duration < 3.0:
-        raise ValueError(f"Reference is {duration:.1f}s after trimming; use at least 3s (8-15s recommended).")
+    if duration < REF_MIN_S:
+        raise ValueError(f"Reference is {duration:.1f}s after trimming; use at least {REF_MIN_S:.0f}s (8-15s recommended).")
+    if duration > REF_MAX_S:
+        raise ValueError(
+            f"Reference is {duration:.1f}s; use at most {REF_MAX_S:.0f}s (8-15s recommended). Long references make "
+            "pitch unstable and generation slow. Cut a clean excerpt and give its exact transcript."
+        )
+    warnings = []
+    if duration > REF_WARN_S:
+        warnings.append(f"Reference is {duration:.0f}s; 8-15s gives steadier pitch and faster generation.")
+    f0_median, _ = pitch_profile(wav, SAMPLE_RATE)
 
     items = tts.create_voice_clone_prompt(
         ref_audio=(wav, SAMPLE_RATE), ref_text=ref_text or None, x_vector_only_mode=x_vector_only
@@ -142,6 +160,8 @@ def create_voice(
         "ref_duration_s": round(duration, 3),
         # Speaking rate of the reference; used to sanity-check generated chunk lengths.
         "chars_per_sec": round(len(ref_text) / duration, 3) if ref_text else None,
+        "f0_median_hz": round(f0_median, 1) if np.isfinite(f0_median) else None,
+        "warnings": warnings,
         "params": merged,
         "model": model_info(tts),
         "notes": notes,
@@ -170,10 +190,21 @@ def load_voice(root: str, name: str, version: Optional[int] = None) -> Voice:
         )
         for d in payload["items"]
     ]
+    if meta.get("ref_duration_s", 0) > REF_WARN_S and not meta.get("warnings"):
+        # Versions made before the length guard existed.
+        meta["warnings"] = [f"Reference is {meta['ref_duration_s']:.0f}s; 8-15s gives steadier pitch and faster generation."]
+    f0 = meta.get("f0_median_hz")
+    if f0 is None and (vdir / "ref.wav").exists():
+        # Versions made before pitch tracking: measure now, in memory only
+        # (voice versions are never rewritten on disk).
+        wav, _ = sf.read(vdir / "ref.wav", dtype="float32")
+        med, _ = pitch_profile(wav, SAMPLE_RATE)
+        f0 = med if np.isfinite(med) else None
     return Voice(
         name=name,
         version=version,
         path=vdir,
+        f0_median_hz=f0,
         ref_text=meta["ref_text"],
         language=meta["language"],
         mode=meta["mode"],

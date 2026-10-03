@@ -19,8 +19,10 @@ export type VoiceVersion = {
   ref_text: string;
   ref_duration_s: number;
   chars_per_sec: number | null;
+  f0_median_hz: number | null;
   params: GenParams;
   notes: string;
+  warnings: string[];
 };
 
 export type Voice = { name: string; latest: number; versions: VoiceVersion[] };
@@ -36,6 +38,8 @@ export type ChunkResult = {
   status: "ok" | "suspect";
   start_s: number;
   end_s: number;
+  f0_median_hz?: number | null;
+  issue?: string | null;
 };
 
 export type JobStatus = "queued" | "running" | "succeeded" | "partial" | "failed";
@@ -71,6 +75,7 @@ export type Job<Req = TTSRequest> = {
       params: GenParams;
       suspect_chunks: number[];
       retried_chunks: number[];
+      warnings?: string[];
     };
     chunks: ChunkResult[];
     audio_version: number;

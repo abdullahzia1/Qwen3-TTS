@@ -64,3 +64,49 @@ def test_normalize_loudness_reaches_target_on_peaky_signal():
 def test_stitch_inserts_pauses():
     out = stitch([_tone(1.0), _tone(1.0)], ["paragraph", "end"], SR)
     assert len(out) == 2 * SR + int(0.6 * SR)
+
+
+def _glide(seconds, f0):
+    """Voiced-ish test signal: a harmonic tone at f0."""
+    phase = 2 * np.pi * f0 * np.arange(int(SR * seconds)) / SR
+    return (0.3 * (np.sin(phase) + 0.5 * np.sin(2 * phase))).astype(np.float32)
+
+
+def _voice(f0):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(f0_median_hz=f0)
+
+
+def test_pitch_profile_tracks_f0():
+    from voicekit.audio import pitch_profile
+
+    med, wins = pitch_profile(_glide(4.0, 130), SR)
+    assert med == pytest.approx(130, rel=0.03)
+    assert len(wins) == 2
+
+
+def test_inspect_flags_pitch_spike_but_not_steady_take():
+    from voicekit.synth import _inspect
+
+    steady = _glide(6.0, 128)
+    issue, f0, _ = _inspect(steady, SR, 6.0, _voice(128))
+    assert issue is None and f0 == pytest.approx(128, rel=0.03)
+
+    jumpy = np.concatenate([_glide(2.0, 190), _glide(4.0, 128)])  # +48% opening, like the chunk users heard
+    issue, _, _ = _inspect(jumpy, SR, 6.0, _voice(128))
+    assert issue and issue.startswith("pitch spike +")
+
+
+def test_inspect_flags_chunk_off_from_job_median():
+    from voicekit.synth import _inspect
+
+    issue, _, _ = _inspect(_glide(6.0, 150), SR, 6.0, _voice(150), target_f0=120)
+    assert issue == "pitch +25% vs other chunks"
+
+
+def test_inspect_flags_length():
+    from voicekit.synth import _inspect
+
+    issue, _, _ = _inspect(_glide(1.0, 128), SR, 6.0, _voice(128))
+    assert issue.startswith("too short")

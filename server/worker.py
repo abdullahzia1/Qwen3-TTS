@@ -112,7 +112,10 @@ class Worker:
         target = chunks[idx]
         params = result["meta"]["params"]
 
-        wav, sr, new = render_chunk(self.engine.tts, voice, idx, Chunk(target.text, target.boundary), seed, params)
+        others = [c.f0_median_hz for c in chunks if c.idx != idx and c.f0_median_hz]
+        target_f0 = float(np.median(others)) if len(others) >= 2 else None
+        wav, sr, new = render_chunk(self.engine.tts, voice, idx, Chunk(target.text, target.boundary), seed, params,
+                                    target_f0=target_f0)
         d = self.job_dir(job["id"])
         sf.write(d / "chunks" / f"{idx:03d}.wav", wav, sr, subtype="FLOAT")
         chunks[idx] = new

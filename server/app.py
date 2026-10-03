@@ -55,10 +55,15 @@ def _voice_versions(voices_dir: Path) -> List[Dict[str, Any]]:
             meta_path = v / "voice.json"
             if meta_path.exists():
                 meta = json.loads(meta_path.read_text())
-                versions.append({k: meta.get(k) for k in (
+                v_info = {k: meta.get(k) for k in (
                     "version", "created_at", "mode", "language", "ref_text", "ref_duration_s",
-                    "chars_per_sec", "params", "notes",
-                )})
+                    "chars_per_sec", "f0_median_hz", "params", "notes",
+                )}
+                v_info["warnings"] = meta.get("warnings") or (
+                    [f"Reference is {meta['ref_duration_s']:.0f}s; 8-15s gives steadier pitch and faster generation."]
+                    if meta.get("ref_duration_s", 0) > 20 else []
+                )
+                versions.append(v_info)
         if versions:
             out.append({"name": vdir.name, "latest": versions[-1]["version"], "versions": versions})
     return out

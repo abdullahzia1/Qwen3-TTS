@@ -97,6 +97,8 @@ export function Studio({ jobId, onJob }: { jobId: string | null; onJob: (id: str
           </button>
         </div>
 
+        {selected?.warnings?.map((w) => <p key={w} className="warning small">⚠ {w}</p>)}
+
         {showSettings && (
           <SettingsPanel settings={settings} effective={effective} onChange={setSettings} voiceDefaults={selected?.params} />
         )}
@@ -237,6 +239,7 @@ function Result({ job }: { job: Job }) {
         {fmt(meta.duration_s)} · {meta.lufs ?? "—"} LUFS · RTF {meta.rtf ?? "—"} · {chunks.length} chunks
         {meta.retried_chunks.length > 0 && ` · retried ${meta.retried_chunks.join(", ")}`}
       </div>
+      {meta.warnings?.map((w) => <p key={w} className="warning small">⚠ {w}</p>)}
       <ol className="chunks">
         {chunks.map((c) => {
           const active = now >= c.start_s && now < c.end_s;
@@ -247,11 +250,12 @@ function Result({ job }: { job: Job }) {
               <div className="grow">
                 <p>{c.text}</p>
                 <span className="small muted mono">
-                  #{c.idx + 1} · {c.duration_s.toFixed(1)}s ({Math.round(ratio * 100)}% of expected) · seed {c.seed}
+                  #{c.idx + 1} · {c.duration_s.toFixed(1)}s ({Math.round(ratio * 100)}% of expected)
+                  {c.f0_median_hz ? ` · ${Math.round(c.f0_median_hz)} Hz` : ""} · seed {c.seed}
                   {c.attempts > 1 && ` · ${c.attempts} attempts`}
                 </span>
               </div>
-              {c.status === "suspect" && <span className="badge partial" title="Length outside the expected range">check</span>}
+              {c.status === "suspect" && <span className="badge partial">{c.issue ?? "check"}</span>}
               <button className="ghost small" disabled={busy || regen.isPending} onClick={() => regen.mutate(c.idx)}>
                 Regenerate
               </button>
