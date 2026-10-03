@@ -29,22 +29,27 @@ def trim_silence(wav: np.ndarray, sr: int, threshold_db: float = -45.0, pad_ms: 
     return wav[start:end]
 
 
-def pitch_profile(wav: np.ndarray, sr: int, window_s: float = 2.0, fmin: float = 60.0, fmax: float = 500.0):
-    """Median F0 of the voiced frames, plus the median of each `window_s` window.
+def pitch_profile(wav: np.ndarray, sr: int, window_s: float = 2.0, step_s: float = 0.5,
+                  fmin: float = 60.0, fmax: float = 500.0):
+    """Median F0 of the voiced frames, plus the median of every `window_s` window.
 
-    Windows with too little voiced speech (pauses, breaths) are skipped so they
-    can't read as pitch jumps. Returns (nan, []) when nothing is voiced.
+    Windows slide by `step_s`, so a pitch excursion is measured the same way no
+    matter where it sits in the clip (fixed windows gave +36% or +64% for the
+    same take depending on leading silence). Windows with too little voiced
+    speech (pauses, breaths) are skipped so they can't read as jumps.
+    Returns (nan, []) when nothing is voiced.
     """
-    hop = 512
-    f0, voiced, _ = librosa.pyin(wav, fmin=fmin, fmax=fmax, sr=sr, frame_length=2048, hop_length=hop)
+    hop = 256
+    f0, voiced, _ = librosa.pyin(wav, fmin=fmin, fmax=fmax, sr=sr, frame_length=1024, hop_length=hop)
     f0 = np.where(voiced, f0, np.nan)
     if np.all(np.isnan(f0)):
         return float("nan"), []
     n = max(1, int(window_s * sr / hop))
+    step = max(1, int(step_s * sr / hop))
     windows = []
-    for i in range(0, len(f0), n):
+    for i in range(0, max(1, len(f0) - n + 1), step):
         w = f0[i : i + n]
-        if np.sum(~np.isnan(w)) >= 0.25 * n:
+        if np.sum(~np.isnan(w)) >= 0.25 * len(w):
             windows.append(float(np.nanmedian(w)))
     return float(np.nanmedian(f0)), windows
 

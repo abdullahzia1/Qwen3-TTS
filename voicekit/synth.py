@@ -24,13 +24,19 @@ CODEC_FPS = 12.5
 MIN_RATIO = 0.5
 MAX_RATIO = 1.7
 
-# Pitch checks, calibrated on real takes (2026-10-03): the jump users heard
-# measured +59% in its worst 2 s window, every acceptable chunk stayed <= 26%.
-# SPIKE_MAX_DEV: worst 2 s window vs the voice's reference pitch.
-# CONSISTENCY_MAX_DEV: a chunk's median pitch vs the median of all chunks in
-# the job (needs >= 3 chunks); catches a whole chunk read in a different register.
-SPIKE_MAX_DEV = 0.40
+# Pitch checks. All run on the trimmed speech with sliding 2 s windows, and
+# only when there is >= MIN_PITCH_SPEECH_S of speech (shorter clips give the
+# pitch tracker too few frames to be trusted). Thresholds calibrated on the
+# 96-take baseline (2026-10-04) plus the jump users heard (+59%):
+# SPIKE_MAX_DEV: worst window vs the voice's reference pitch. 45% flags 3.4%
+#   of baseline takes; 40% also flagged natural rises on questions.
+# REGISTER_MAX_DEV: whole-chunk median vs reference pitch (catches a line read
+#   entirely higher, e.g. +46%). Flags 2.3% of baseline takes.
+# CONSISTENCY_MAX_DEV: chunk median vs the median of the job's chunks (3+).
+SPIKE_MAX_DEV = 0.45
+REGISTER_MAX_DEV = 0.30
 CONSISTENCY_MAX_DEV = 0.20
+MIN_PITCH_SPEECH_S = 1.0
 SLOW_RTF = 5.0
 
 
@@ -98,28 +104,32 @@ def _generate(tts, voice: Voice, texts: List[str], seed: int, params: Dict[str, 
 
 def _inspect(wav: np.ndarray, sr: int, expected_s: float, voice: Voice, target_f0: Optional[float] = None):
     """Check one take. Returns (issue or None, median f0, badness) - lower badness is better."""
-    dur = len(wav) / sr
-    ratio = dur / expected_s
-    med, windows = pitch_profile(wav, sr) if dur > 0.3 else (float("nan"), [])
+    ratio = (len(wav) / sr) / expected_s
+    speech = trim_silence(wav, sr)
+    med, windows = float("nan"), []
+    if len(speech) / sr >= MIN_PITCH_SPEECH_S:
+        med, windows = pitch_profile(speech, sr)
     f0 = med if np.isfinite(med) else None
-    len_bad = max(0.0, MIN_RATIO - ratio) / MIN_RATIO + max(0.0, ratio - MAX_RATIO) / MAX_RATIO
+    ref = voice.f0_median_hz
 
-    spike = 0.0
-    if voice.f0_median_hz and windows:
-        devs = [w / voice.f0_median_hz - 1 for w in windows]
-        spike = max(devs, key=abs)
+    spike = max((w / ref - 1 for w in windows), key=abs) if (ref and windows) else 0.0
+    register = (f0 / ref - 1) if (ref and f0) else 0.0
     drift = (f0 / target_f0 - 1) if (target_f0 and f0) else 0.0
+    len_bad = max(0.0, MIN_RATIO - ratio) / MIN_RATIO + max(0.0, ratio - MAX_RATIO) / MAX_RATIO
 
     issue = None
     if ratio < MIN_RATIO:
         issue = f"too short ({ratio:.0%} of expected)"
     elif ratio > MAX_RATIO:
         issue = f"too long ({ratio:.0%} of expected)"
+    elif abs(register) > REGISTER_MAX_DEV:
+        issue = f"pitch {register:+.0%} vs voice"
     elif abs(spike) > SPIKE_MAX_DEV:
         issue = f"pitch spike {spike:+.0%}"
     elif abs(drift) > CONSISTENCY_MAX_DEV:
         issue = f"pitch {drift:+.0%} vs other chunks"
-    badness = len_bad + max(0.0, abs(spike) - SPIKE_MAX_DEV) + max(0.0, abs(drift) - CONSISTENCY_MAX_DEV)
+    badness = (len_bad + max(0.0, abs(register) - REGISTER_MAX_DEV) + max(0.0, abs(spike) - SPIKE_MAX_DEV)
+               + max(0.0, abs(drift) - CONSISTENCY_MAX_DEV))
     return issue, f0, badness
 
 

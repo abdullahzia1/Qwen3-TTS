@@ -7,7 +7,7 @@
     # 3. compare two scored runs
     python -m bench compare bench/runs/baseline bench/runs/temp07
 
-Judges (override with env to use local copies):
+Judges (override with env to use local copies; BENCH_DEVICE=cpu keeps the GPU free for generation):
     BENCH_ASR_MODEL  default openai/whisper-large-v3-turbo   -> word error rate
     BENCH_SV_MODEL   default microsoft/wavlm-base-plus-sv    -> speaker similarity
 They are deliberately not Qwen components, so the TTS model is never grading itself.
@@ -92,13 +92,18 @@ class Judges:
         import torch
         from transformers import AutoFeatureExtractor, WavLMForXVector, pipeline
 
-        device = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
+        device = os.environ.get("BENCH_DEVICE") or (
+            "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu"))
         asr = os.environ.get("BENCH_ASR_MODEL", "openai/whisper-large-v3-turbo")
         sv = os.environ.get("BENCH_SV_MODEL", "microsoft/wavlm-base-plus-sv")
         print(f"[score] judges: ASR={asr}  SV={sv}  device={device}", flush=True)
         self.asr = pipeline("automatic-speech-recognition", model=asr, torch_dtype=torch.float16 if device != "cpu" else torch.float32,
                             device=device)
-        self.normalize = self.asr.tokenizer.normalize
+        import re
+
+        # Whisper writes spoken times as "3.30" or "3:30" interchangeably; both
+        # are the same words, so unify before scoring.
+        self.normalize = lambda t: self.asr.tokenizer.normalize(re.sub(r"(\d)[:.](\d\d)\b", r"\1 \2", t))
         self.sv_fe = AutoFeatureExtractor.from_pretrained(sv)
         self.sv = WavLMForXVector.from_pretrained(sv).eval()
         self.torch = torch

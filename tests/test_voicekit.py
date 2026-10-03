@@ -83,7 +83,7 @@ def test_pitch_profile_tracks_f0():
 
     med, wins = pitch_profile(_glide(4.0, 130), SR)
     assert med == pytest.approx(130, rel=0.03)
-    assert len(wins) == 2
+    assert len(wins) >= 4  # 2 s windows sliding by 0.5 s
 
 
 def test_inspect_flags_pitch_spike_but_not_steady_take():
@@ -93,9 +93,24 @@ def test_inspect_flags_pitch_spike_but_not_steady_take():
     issue, f0, _ = _inspect(steady, SR, 6.0, _voice(128))
     assert issue is None and f0 == pytest.approx(128, rel=0.03)
 
-    jumpy = np.concatenate([_glide(2.0, 190), _glide(4.0, 128)])  # +48% opening, like the chunk users heard
-    issue, _, _ = _inspect(jumpy, SR, 6.0, _voice(128))
-    assert issue and issue.startswith("pitch spike +")
+    # +55% opening on an otherwise normal line, like the chunk users heard.
+    jumpy = np.concatenate([_glide(2.5, 198), _glide(6.0, 128)])
+    issue, _, _ = _inspect(jumpy, SR, 8.5, _voice(128))
+    assert issue and issue.startswith("pitch spike +"), issue
+
+
+def test_inspect_flags_whole_line_in_wrong_register():
+    from voicekit.synth import _inspect
+
+    issue, _, _ = _inspect(_glide(4.0, 175), SR, 4.0, _voice(128))
+    assert issue == "pitch +37% vs voice"
+
+
+def test_inspect_skips_pitch_checks_on_sub_second_speech():
+    from voicekit.synth import _inspect
+
+    issue, f0, _ = _inspect(_glide(0.7, 250), SR, 0.7, _voice(128))  # would be +95%
+    assert issue is None and f0 is None
 
 
 def test_inspect_flags_chunk_off_from_job_median():
