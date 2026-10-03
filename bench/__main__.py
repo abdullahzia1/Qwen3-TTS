@@ -104,9 +104,13 @@ class Judges:
         self.torch = torch
 
     def transcribe(self, wav: np.ndarray, sr: int) -> str:
-        out = self.asr({"raw": wav, "sampling_rate": sr}, generate_kwargs={"language": "english", "task": "transcribe"},
-                       chunk_length_s=30, batch_size=4)
-        return out["text"].strip()
+        kw = {"generate_kwargs": {"language": "english", "task": "transcribe"}}
+        if len(wav) / sr > 28:
+            # Sequential long-form decoding. The pipeline's chunk_length_s=30
+            # mode was measured dropping a ~15 s passage at a window boundary,
+            # which would score as false word errors.
+            kw["return_timestamps"] = True
+        return self.asr({"raw": wav, "sampling_rate": sr}, **kw)["text"].strip()
 
     def embed(self, wav: np.ndarray, sr: int) -> np.ndarray:
         import librosa
