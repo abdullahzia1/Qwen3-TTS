@@ -33,6 +33,7 @@ class TTSRequest(BaseModel):
     max_chars: int = Field(400, ge=80, le=1200)
     batch_size: int = Field(1, ge=1, le=16)
     target_lufs: float = Field(-16.0, ge=-30, le=-8)
+    tag: Optional[str] = Field(None, max_length=32, description="free label, e.g. 'bench'; tagged jobs are hidden from the default list")
 
 
 class PreviewRequest(BaseModel):
@@ -169,8 +170,22 @@ def create_app(store: Store, engine: Engine, worker: Worker, data_dir: Path,
         return store.create_job("tts", body, "tts.render", {}, idempotency_key=idempotency_key)
 
     @app.get("/v1/tts/jobs", dependencies=deps)
-    def list_tts_jobs(limit: int = 50):
-        return store.list_jobs("tts", limit=min(limit, 200))
+    def list_tts_jobs(limit: int = 50, tag: Optional[str] = None, all: bool = False):
+        """Slim summaries for listing; fetch /v1/jobs/{id} for chunks and full metadata.
+
+        Default: untagged jobs only (the UI's History). `tag=bench` lists that tag; `all=true` lists everything.
+        """
+        jobs = store.list_jobs("tts", limit=min(limit, 200), tag=tag, untagged=not (tag or all))
+        out = []
+        for j in jobs:
+            req, res = j["request"], j["result"]
+            out.append({
+                **{k: j[k] for k in ("id", "kind", "status", "progress", "error", "created_at", "started_at", "finished_at")},
+                "request": {"voice": req["voice"], "text": req["text"][:300], "tag": req.get("tag")},
+                "result": None if not res else {"meta": {k: res["meta"].get(k) for k in (
+                    "voice", "duration_s", "rtf", "lufs", "suspect_chunks", "retried_chunks")}},
+            })
+        return out
 
     @app.get("/v1/jobs/{job_id}", dependencies=deps)
     @app.get("/v1/tts/jobs/{job_id}", dependencies=deps)

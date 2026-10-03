@@ -277,3 +277,17 @@ def test_crashed_tasks_are_requeued_on_restart(tmp_path):
     restarted = Store(db)
     assert restarted.get_job(job["id"])["status"] == "queued"
     assert restarted.claim_task()["job_id"] == job["id"]
+
+
+def test_job_list_is_slim_and_hides_tagged_jobs(client):
+    _make_voice(client)
+    mine = client.post("/v1/tts/jobs", json={"voice": "narrator", "text": "A normal job. " * 40}).json()["id"]
+    bench = client.post("/v1/tts/jobs", json={"voice": "narrator", "text": "A bench job.", "tag": "bench"}).json()["id"]
+    _wait(client, mine), _wait(client, bench)
+
+    default = client.get("/v1/tts/jobs").json()
+    assert [j["id"] for j in default] == [mine]
+    assert "chunks" not in default[0]["result"] and default[0]["result"]["meta"]["duration_s"] > 0
+    assert len(default[0]["request"]["text"]) <= 300
+    assert [j["id"] for j in client.get("/v1/tts/jobs?tag=bench").json()] == [bench]
+    assert {j["id"] for j in client.get("/v1/tts/jobs?all=true").json()} == {mine, bench}

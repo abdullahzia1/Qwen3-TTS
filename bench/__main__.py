@@ -40,7 +40,7 @@ def cmd_run(args) -> int:
     pending = {}
     for seed in seeds:
         for it in items:
-            body = {"voice": args.voice, "text": it["text"], "seed": seed, "params": params}
+            body = {"voice": args.voice, "text": it["text"], "seed": seed, "params": params, "tag": "bench"}
             if args.max_chars:
                 body["max_chars"] = args.max_chars
             r = c.post("/v1/tts/jobs", json=body)

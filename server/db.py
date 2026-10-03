@@ -116,11 +116,20 @@ class Store:
     def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
         return _row(self._one("SELECT * FROM jobs WHERE id=?", (job_id,)))
 
-    def list_jobs(self, kind: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
+    def list_jobs(self, kind: Optional[str] = None, limit: int = 50, tag: Optional[str] = None,
+                  untagged: bool = False) -> List[Dict[str, Any]]:
+        """Newest first. `tag` keeps only that tag; `untagged` keeps only jobs without one."""
+        where, args = [], []
         if kind:
-            rows = self._all("SELECT * FROM jobs WHERE kind=? ORDER BY created_at DESC LIMIT ?", (kind, limit))
-        else:
-            rows = self._all("SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,))
+            where.append("kind=?")
+            args.append(kind)
+        if tag:
+            where.append("json_extract(request, '$.tag')=?")
+            args.append(tag)
+        elif untagged:
+            where.append("json_extract(request, '$.tag') IS NULL")
+        sql = "SELECT * FROM jobs" + (" WHERE " + " AND ".join(where) if where else "")
+        rows = self._all(sql + " ORDER BY created_at DESC LIMIT ?", (*args, limit))
         return [_row(r) for r in rows]
 
     def update_job(self, job_id: str, **fields: Any) -> None:
