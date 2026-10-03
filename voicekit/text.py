@@ -20,7 +20,67 @@ class Chunk:
     boundary: str
 
 
-def normalize(text: str, lexicon: Optional[Dict[str, str]] = None) -> str:
+_ONES = ("zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen "
+         "sixteen seventeen eighteen nineteen").split()
+_TENS = "_ _ twenty thirty forty fifty sixty seventy eighty ninety".split()
+_SCALES = ((10**9, "billion"), (10**6, "million"), (1000, "thousand"))
+
+
+def number_words(n: int) -> str:
+    """0 <= n < 10**12 in words: 5 -> 'five', 1256 -> 'one thousand two hundred fifty-six'."""
+    if n < 20:
+        return _ONES[n]
+    if n < 100:
+        return _TENS[n // 10] + ("-" + _ONES[n % 10] if n % 10 else "")
+    if n < 1000:
+        return _ONES[n // 100] + " hundred" + (" " + number_words(n % 100) if n % 100 else "")
+    for size, name in _SCALES:
+        if n >= size:
+            return number_words(n // size) + " " + name + (" " + number_words(n % size) if n % size else "")
+    raise ValueError(n)
+
+
+_MONEY = re.compile(r"\$(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?(?!\d|,\d)(\s*(?:billion|million|thousand)\b)?")
+_PERCENT = re.compile(r"(?<![\d.])(\d+(?:\.\d+)?)\s?%")
+
+
+def _decimal_words(whole: int, frac: str) -> str:
+    return number_words(whole) + (" point " + " ".join(_ONES[int(d)] for d in frac) if frac else "")
+
+
+def _money(m: "re.Match") -> str:
+    raw_dollars, frac, scale = m.group(1), m.group(2) or "", m.group(3)
+    dollars = int(raw_dollars.replace(",", ""))
+    if scale:  # "$2.5 billion" -> "two point five billion dollars"
+        return f"{_decimal_words(dollars, frac)} {scale.strip()} dollars"
+    if frac and len(frac) != 2:
+        return m.group(0)  # not a currency amount we understand; leave it to the model
+    parts = []
+    if dollars or not frac:
+        parts.append(f"{number_words(dollars)} dollar{'s' if dollars != 1 else ''}")
+    if frac and int(frac):
+        parts.append(f"{number_words(int(frac))} cent{'s' if int(frac) != 1 else ''}")
+    return " and ".join(parts) or "zero dollars"
+
+
+def _percent(m: "re.Match") -> str:
+    whole, _, frac = m.group(1).partition(".")
+    return _decimal_words(int(whole), frac) + " percent"
+
+
+def expand_numbers(text: str) -> str:
+    """Spell out money and percentages so every take reads the same words.
+
+    Measured on the benchmark: "$0.16" was read as "16 cents" in some takes and
+    "$0.16" (zero point one six dollars) in others, and "$5.86" was once slurred.
+    Plain numbers, years and times are left to the model, which reads them
+    consistently.
+    """
+    text = _MONEY.sub(_money, text)
+    return _PERCENT.sub(_percent, text)
+
+
+def normalize(text: str, lexicon: Optional[Dict[str, str]] = None, expand: bool = True) -> str:
     """Make the text deterministic before it reaches the model.
 
     `lexicon` maps a word or phrase to its respelling ("GCP" -> "G C P").
@@ -32,9 +92,12 @@ def normalize(text: str, lexicon: Optional[Dict[str, str]] = None) -> str:
     t = re.sub(r"[‘’]", "'", t)
     t = re.sub(r"\.{3,}", "…", t)
     if lexicon:
+        # Lexicon first, so a user respelling always wins over automatic expansion.
         # Longest keys first so "AI agents" wins over "AI".
         for key in sorted(lexicon, key=len, reverse=True):
             t = re.sub(rf"(?<!\w){re.escape(key)}(?!\w)", lexicon[key], t)
+    if expand:
+        t = expand_numbers(t)
     t = re.sub(r"[ \t]+", " ", t)
     t = re.sub(r"\n{3,}", "\n\n", t)
     return t.strip()

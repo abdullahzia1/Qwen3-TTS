@@ -125,3 +125,39 @@ def test_inspect_flags_length():
 
     issue, _, _ = _inspect(_glide(1.0, 128), SR, 6.0, _voice(128))
     assert issue.startswith("too short")
+
+
+def test_number_words():
+    from voicekit.text import number_words
+
+    assert number_words(0) == "zero"
+    assert number_words(16) == "sixteen"
+    assert number_words(58) == "fifty-eight"
+    assert number_words(100) == "one hundred"
+    assert number_words(24000) == "twenty-four thousand"
+    assert number_words(1_000_005) == "one million five"
+
+
+@pytest.mark.parametrize("src,want", [
+    ("costs fell from $5.86 per ton", "costs fell from five dollars and eighty-six cents per ton"),
+    ("to just $0.16, a drop", "to just sixteen cents, a drop"),
+    ("only $1 each", "only one dollar each"),
+    ("a $24,000 truck", "a twenty-four thousand dollars truck"),
+    ("$3 billion deal", "three billion dollars deal"),
+    ("a $2.5 billion deal", "a two point five billion dollars deal"),
+    ("priced at $5.867 per unit", "priced at $5.867 per unit"),
+    ("$0.00", "zero dollars"),
+    ("a drop of about 97%", "a drop of about ninety-seven percent"),
+    ("rose 2.5% overnight", "rose two point five percent overnight"),
+    ("In 1956 it carried 58 boxes at 3:30 p.m.", "In 1956 it carried 58 boxes at 3:30 p.m."),
+])
+def test_expand_numbers(src, want):
+    from voicekit.text import normalize
+
+    assert normalize(src) == want
+
+
+def test_lexicon_overrides_expansion():
+    from voicekit.text import normalize
+
+    assert normalize("pay $5 now", {"$5": "a fiver"}) == "pay a fiver now"
