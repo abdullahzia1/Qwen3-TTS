@@ -34,3 +34,4 @@ example_output/
 # voicekit: voice library and rendered audio stay local
 voices/
 *.wav
+data/
