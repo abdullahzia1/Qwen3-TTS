@@ -145,3 +145,29 @@ def test_api_key_enforced(tmp_path):
     with TestClient(app) as c:
         assert c.get("/v1/engine").status_code == 401
         assert c.get("/v1/engine", headers={"Authorization": "Bearer s3cret"}).status_code == 200
+
+
+def test_store_is_safe_under_concurrent_reads(tmp_path):
+    # Regression: rows were fetched after the lock was released, so a worker
+    # thread polling queue_depth() could clobber another thread's result.
+    import threading
+
+    store = Store(str(tmp_path / "c.db"))
+    job = store.create_job("tts", {"text": "x"}, "tts.render", {})
+    errors = []
+
+    def hammer():
+        try:
+            for _ in range(500):
+                assert store.queue_depth() >= 0
+                assert store.get_job(job["id"])["id"] == job["id"]
+                store.list_jobs("tts", limit=5)
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=hammer) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors, errors[:3]

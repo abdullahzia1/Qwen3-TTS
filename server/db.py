@@ -71,9 +71,19 @@ class Store:
         self._db.execute("UPDATE tasks SET status='queued' WHERE status='running'")
         self._db.execute("UPDATE jobs SET status='queued' WHERE status='running'")
 
-    def _q(self, sql: str, args=()) -> sqlite3.Cursor:
+    # The connection is shared across threads, so rows must be fetched while
+    # the lock is still held - a cursor read after release can be clobbered.
+    def _q(self, sql: str, args=()) -> None:
         with self._lock:
-            return self._db.execute(sql, args)
+            self._db.execute(sql, args)
+
+    def _one(self, sql: str, args=()) -> Optional[sqlite3.Row]:
+        with self._lock:
+            return self._db.execute(sql, args).fetchone()
+
+    def _all(self, sql: str, args=()) -> List[sqlite3.Row]:
+        with self._lock:
+            return self._db.execute(sql, args).fetchall()
 
     # --- jobs ---------------------------------------------------------------
     def create_job(self, kind: str, request: Dict[str, Any], op: str, args: Dict[str, Any],
@@ -104,13 +114,13 @@ class Store:
             return _row(self._db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone())
 
     def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
-        return _row(self._q("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone())
+        return _row(self._one("SELECT * FROM jobs WHERE id=?", (job_id,)))
 
     def list_jobs(self, kind: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
         if kind:
-            rows = self._q("SELECT * FROM jobs WHERE kind=? ORDER BY created_at DESC LIMIT ?", (kind, limit)).fetchall()
+            rows = self._all("SELECT * FROM jobs WHERE kind=? ORDER BY created_at DESC LIMIT ?", (kind, limit))
         else:
-            rows = self._q("SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+            rows = self._all("SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,))
         return [_row(r) for r in rows]
 
     def update_job(self, job_id: str, **fields: Any) -> None:
@@ -142,9 +152,9 @@ class Store:
         self._q("UPDATE tasks SET status=?, error=? WHERE id=?", ("failed" if error else "done", error, task_id))
 
     def queue_depth(self) -> int:
-        return self._q("SELECT COUNT(*) FROM tasks WHERE status IN ('queued', 'running')").fetchone()[0]
+        return self._one("SELECT COUNT(*) FROM tasks WHERE status IN ('queued', 'running')")[0]
 
     def has_pending(self, job_id: str) -> bool:
-        return bool(self._q(
+        return self._one(
             "SELECT 1 FROM tasks WHERE job_id=? AND status IN ('queued', 'running') LIMIT 1", (job_id,)
-        ).fetchone())
+        ) is not None

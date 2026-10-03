@@ -1,0 +1,9 @@
+# Supply-chain guardrails for this package.
+# Never resolve a version published less than 7 days ago (in minutes):
+# hijacked releases are usually caught and pulled within that window.
+minimumReleaseAge: 10080
+# Refuse an install when a package's trust evidence (provenance/signatures)
+# is weaker than in earlier versions - a common sign of a hijacked account.
+trustPolicy: no-downgrade
+# No dependency may run install/postinstall scripts. Allow-list here if one ever must.
+onlyBuiltDependencies: []
