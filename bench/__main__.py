@@ -185,17 +185,24 @@ def cmd_score(args) -> int:
     return 0
 
 
+# Speaker-similarity and pitch need about a second of speech; on shorter clips
+# both judges were measured to be unreliable (0% voiced, similarity 0.76 on
+# takes that ASR heard perfectly), so those clips only count toward WER.
+MIN_ACOUSTIC_S = 1.0
+
+
 def summarize(items: List[Dict[str, Any]]) -> Dict[str, Any]:
     ok = [i for i in items if i.get("wer") is not None]
+    acoustic = [i for i in ok if i.get("duration_s", MIN_ACOUSTIC_S) >= MIN_ACOUSTIC_S]
     cv = lambda xs: float(np.std(xs) / np.mean(xs)) if len(xs) > 1 and np.mean(xs) else None  # noqa: E731
-    f0s = [i["f0"] for i in ok if i["f0"]]
+    f0s = [i["f0"] for i in acoustic if i["f0"]]
     paces = [i["pace_wps"] for i in ok if i["cat"] != "short"]
     by_cat: Dict[str, List] = {}
     for i in ok:
         by_cat.setdefault(i["cat"], []).append(i)
     # Seed-to-seed variation per item: how differently the same line comes out.
     by_item: Dict[str, List] = {}
-    for i in ok:
+    for i in acoustic:
         by_item.setdefault(i["id"], []).append(i)
     seed_f0_cv = [cv([x["f0"] for x in v if x["f0"]]) for v in by_item.values() if len(v) > 1]
     seed_f0_cv = [x for x in seed_f0_cv if x is not None]
@@ -204,14 +211,15 @@ def summarize(items: List[Dict[str, Any]]) -> Dict[str, Any]:
         "wer": sum(i["errors"] for i in ok) / max(1, sum(i["words"] for i in ok)),
         "items_wer_gt_10pct": sorted({f"{i['id']}/s{i['seed']}" for i in ok if i["wer"] > 0.1}),
         "wer_by_cat": {k: sum(i["errors"] for i in v) / max(1, sum(i["words"] for i in v)) for k, v in sorted(by_cat.items())},
-        "sim_mean": float(np.mean([i["sim"] for i in ok])) if ok else None,
-        "sim_min": float(np.min([i["sim"] for i in ok])) if ok else None,
-        "sim_std": float(np.std([i["sim"] for i in ok])) if ok else None,
+        "acoustic_excluded_short": len(ok) - len(acoustic),
+        "sim_mean": float(np.mean([i["sim"] for i in acoustic])) if acoustic else None,
+        "sim_min": float(np.min([i["sim"] for i in acoustic])) if acoustic else None,
+        "sim_std": float(np.std([i["sim"] for i in acoustic])) if acoustic else None,
         "f0_median": float(np.median(f0s)) if f0s else None,
         "f0_cv_across_items": cv(f0s),
         "f0_cv_across_seeds": float(np.mean(seed_f0_cv)) if seed_f0_cv else None,
-        "spike_max": max((i["spike"] or 0) for i in ok) if ok else None,
-        "spikes_gt_40pct": sum(1 for i in ok if (i["spike"] or 0) > 0.4),
+        "spike_max": max((i["spike"] or 0) for i in acoustic) if acoustic else None,
+        "spikes_gt_40pct": sum(1 for i in acoustic if (i["spike"] or 0) > 0.4),
         "pace_mean_wps": float(np.mean(paces)) if paces else None,
         "pace_cv": cv(paces),
         "lufs_std": float(np.std([i["lufs"] for i in ok if np.isfinite(i["lufs"])])) if ok else None,
@@ -228,7 +236,7 @@ ROWS = [
     ("pace_cv", "Pace variation (CV)", "{:.1%}", -1), ("pace_mean_wps", "Pace (words/s)", "{:.2f}", 0),
     ("lufs_std", "Loudness spread (LU)", "{:.2f}", -1), ("retry_rate", "Retry rate per chunk", "{:.1%}", -1),
     ("suspect_chunks", "Chunks left suspect", "{}", -1), ("rtf_mean", "Speed (RTF, lower=faster)", "{:.2f}", -1),
-    ("failed", "Failed jobs", "{}", -1),
+    ("failed", "Failed jobs", "{}", -1), ("acoustic_excluded_short", "Clips < 1 s (WER only)", "{}", 0),
 ]
 
 

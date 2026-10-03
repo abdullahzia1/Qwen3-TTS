@@ -12,7 +12,7 @@ def test_word_errors_counts_sub_ins_del():
 
 def _item(id_, seed, f0, wer=0.0, words=10, sim=0.9, cat="medium", spike=0.1):
     return {"id": id_, "cat": cat, "seed": seed, "words": words, "errors": round(wer * words), "wer": wer,
-            "sim": sim, "f0": f0, "spike": spike, "pace_wps": 2.5, "lufs": -16.0, "rtf": 2.0,
+            "sim": sim, "f0": f0, "spike": spike, "pace_wps": 2.5, "lufs": -16.0, "rtf": 2.0, "duration_s": 3.0,
             "chunks": 1, "attempts": 1, "suspect": 0}
 
 
@@ -24,3 +24,10 @@ def test_summarize_corpus_wer_and_consistency():
     assert s["items_wer_gt_10pct"] == ["b/s0"]
     assert s["spikes_gt_40pct"] == 1
     assert s["f0_cv_across_seeds"] > 0  # item b differs between seeds
+
+
+def test_summarize_keeps_sub_second_clips_out_of_acoustic_stats():
+    short = {**_item("s", 0, None, sim=0.5), "duration_s": 0.6}
+    s = summarize([_item("a", 0, 120, sim=0.95), short])
+    assert s["sim_min"] == 0.95 and s["acoustic_excluded_short"] == 1
+    assert s["wer"] == 0  # still counted for intelligibility
