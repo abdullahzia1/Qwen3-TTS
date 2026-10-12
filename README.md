@@ -1,4 +1,10 @@
 # Qwen3-TTS
+ 
+<p align="center">
+  More improvements and refinements are on the way as I continue using this project in my own workflow.
+
+  Interested in contributing or collaborating? Feel free to reach out at **[abziawork960@gmail.com](mailto:abziawork960@gmail.com)**.
+</p>
 
 <br>
 
